@@ -1,26 +1,29 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import { setupInstallButton } from "./install";
 
-const LS_KEY = "todo_pwa_v1";
+type Status = "PENDIENTE" | "EN_PROCESO" | "TERMINADO";
 
-// Estados permitidos
-const STATUS = {
-  PENDING: "PENDIENTE",
-  IN_PROGRESS: "EN_PROCESO",
-  DONE: "TERMINADO"
+type Task = {
+  id: string;
+  title: string;
+  description: string;
+  status: Status;
+  createdAt: string;     // ISO
+  completedAt: string | null; // ISO o null
 };
+
+const LS_KEY = "todo_pwa_tasks_v1";
 
 function nowISO() {
   return new Date().toISOString();
 }
 
-function formatDateTime(iso) {
+function formatDateTime(iso: string | null) {
   if (!iso) return "—";
-  const d = new Date(iso);
-  return d.toLocaleString();
+  return new Date(iso).toLocaleString();
 }
 
 function uid() {
-  // crypto.randomUUID no siempre está en todos lados, así que fallback
   if (crypto?.randomUUID) return crypto.randomUUID();
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
@@ -28,135 +31,102 @@ function uid() {
 export default function App() {
   const [title, setTitle] = useState("");
   const [desc, setDesc] = useState("");
-  const [status, setStatus] = useState(STATUS.PENDING);
+  const [status, setStatus] = useState<Status>("PENDIENTE");
 
-  const [tasks, setTasks] = useState(() => {
+  const [tasks, setTasks] = useState<Task[]>(() => {
     try {
       const raw = localStorage.getItem(LS_KEY);
-      return raw ? JSON.parse(raw) : [];
+      return raw ? (JSON.parse(raw) as Task[]) : [];
     } catch {
       return [];
     }
   });
 
-  // ===== Botón instalar (PWA) =====
-  const [canInstall, setCanInstall] = useState(false);
-  const deferredPromptRef = useRef(null);
-
+  // instalar (botón)
   useEffect(() => {
-    const handler = (e) => {
-      e.preventDefault();
-      deferredPromptRef.current = e;
-      setCanInstall(true);
-    };
-    window.addEventListener("beforeinstallprompt", handler);
-
-    window.addEventListener("appinstalled", () => {
-      setCanInstall(false);
-      deferredPromptRef.current = null;
-    });
-
-    return () => window.removeEventListener("beforeinstallprompt", handler);
+    const btn = document.getElementById("installBtn") as HTMLButtonElement | null;
+    if (btn) setupInstallButton(btn);
   }, []);
 
-  async function handleInstall() {
-    const dp = deferredPromptRef.current;
-    if (!dp) return;
-    dp.prompt();
-    await dp.userChoice;
-    deferredPromptRef.current = null;
-    setCanInstall(false);
-  }
-
-  // ===== Persistencia =====
+  // persistencia
   useEffect(() => {
     localStorage.setItem(LS_KEY, JSON.stringify(tasks));
   }, [tasks]);
 
-  // ===== Contadores =====
   const counters = useMemo(() => {
     const c = { PENDIENTE: 0, EN_PROCESO: 0, TERMINADO: 0 };
-    for (const t of tasks) c[t.status] = (c[t.status] || 0) + 1;
+    for (const t of tasks) c[t.status]++;
     return c;
   }, [tasks]);
 
-  // ===== CRUD =====
   function addTask() {
     const t = title.trim();
     const d = desc.trim();
-
     if (!t) return;
 
     const createdAt = nowISO();
-    const newTask = {
+    const newTask: Task = {
       id: uid(),
       title: t,
       description: d,
       status,
       createdAt,
-      completedAt: status === STATUS.DONE ? createdAt : null
+      completedAt: status === "TERMINADO" ? createdAt : null
     };
 
     setTasks((prev) => [newTask, ...prev]);
     setTitle("");
     setDesc("");
-    setStatus(STATUS.PENDING);
+    setStatus("PENDIENTE");
   }
 
-  function updateStatus(id, newStatus) {
+  function setTaskStatus(id: string, newStatus: Status) {
     setTasks((prev) =>
       prev.map((t) => {
         if (t.id !== id) return t;
 
-        // si pasa a TERMINADO y no tenía completedAt, se asigna
-        if (newStatus === STATUS.DONE) {
+        if (newStatus === "TERMINADO") {
           return { ...t, status: newStatus, completedAt: t.completedAt ?? nowISO() };
         }
-
-        // si se regresa de TERMINADO a otro estado, quitamos completedAt (o lo puedes conservar si prefieres)
         return { ...t, status: newStatus, completedAt: null };
       })
     );
   }
 
-  function toggleDone(id) {
+  function toggleDone(id: string) {
     setTasks((prev) =>
       prev.map((t) => {
         if (t.id !== id) return t;
-
-        if (t.status === STATUS.DONE) {
-          // Si estaba terminado, lo regresamos a pendiente
-          return { ...t, status: STATUS.PENDING, completedAt: null };
+        if (t.status === "TERMINADO") {
+          return { ...t, status: "PENDIENTE", completedAt: null };
         }
-
-        // Si no estaba terminado, lo marcamos terminado
-        return { ...t, status: STATUS.DONE, completedAt: nowISO() };
+        return { ...t, status: "TERMINADO", completedAt: nowISO() };
       })
     );
   }
 
-  function removeAll() {
+  function removeOne(id: string) {
+    setTasks((prev) => prev.filter((t) => t.id !== id));
+  }
+
+  function clearAll() {
     if (!confirm("¿Seguro que quieres borrar toda la lista?")) return;
     setTasks([]);
   }
 
-  function removeOne(id) {
-    setTasks((prev) => prev.filter((t) => t.id !== id));
-  }
+  const online = navigator.onLine;
 
-  function badgeClass(st) {
-    if (st === STATUS.PENDING) return "badge pending";
-    if (st === STATUS.IN_PROGRESS) return "badge progress";
+  function badgeClass(st: Status) {
+    if (st === "PENDIENTE") return "badge pending";
+    if (st === "EN_PROCESO") return "badge progress";
     return "badge done";
   }
-
-  const online = navigator.onLine;
 
   return (
     <div className="app">
       <header className="top">
         <div>
-          <h1>To-Do (PWA)</h1>
+          <h1>Todo PWA</h1>
           <p className="sub">
             Conexión:{" "}
             <span className={online ? "dot on" : "dot off"}>
@@ -166,17 +136,10 @@ export default function App() {
         </div>
 
         <div className="actions">
-          {canInstall ? (
-            <button className="install" onClick={handleInstall}>
-              Instalar
-            </button>
-          ) : (
-            <button className="ghost" title="Si no aparece, usa el menú del navegador: Agregar a pantalla principal" disabled>
-              Instalar
-            </button>
-          )}
-
-          <button className="danger" onClick={removeAll}>
+          <button id="installBtn" className="install" hidden disabled>
+            Instalar
+          </button>
+          <button className="danger" onClick={clearAll}>
             Borrar todo
           </button>
         </div>
@@ -190,29 +153,27 @@ export default function App() {
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            placeholder="Ej. Terminar actividad de PWA"
+            placeholder="Ej. Subir tarea a Netlify"
           />
 
           <label className="lbl">Descripción</label>
           <textarea
             value={desc}
             onChange={(e) => setDesc(e.target.value)}
-            placeholder="Ej. Agregar manifest, hacer deploy en Netlify..."
+            placeholder="Detalles…"
             rows={3}
           />
 
           <label className="lbl">Estado inicial</label>
-          <select value={status} onChange={(e) => setStatus(e.target.value)}>
-            <option value={STATUS.PENDING}>Pendiente</option>
-            <option value={STATUS.IN_PROGRESS}>En proceso</option>
-            <option value={STATUS.DONE}>Terminado</option>
+          <select value={status} onChange={(e) => setStatus(e.target.value as Status)}>
+            <option value="PENDIENTE">Pendiente</option>
+            <option value="EN_PROCESO">En proceso</option>
+            <option value="TERMINADO">Terminado</option>
           </select>
 
           <div className="row">
             <button onClick={addTask}>Agregar</button>
-            <p className="hint">
-              Se guarda en <b>localStorage</b> automáticamente ✅
-            </p>
+            <p className="hint">Se guarda en localStorage ✅</p>
           </div>
         </section>
 
@@ -220,9 +181,9 @@ export default function App() {
           <h2>Lista</h2>
 
           <div className="counts">
-            <span className="chip">Pendiente: {counters.PENDIENTE || 0}</span>
-            <span className="chip">En proceso: {counters.EN_PROCESO || 0}</span>
-            <span className="chip">Terminado: {counters.TERMINADO || 0}</span>
+            <span className="chip">Pendiente: {counters.PENDIENTE}</span>
+            <span className="chip">En proceso: {counters.EN_PROCESO}</span>
+            <span className="chip">Terminado: {counters.TERMINADO}</span>
           </div>
 
           {tasks.length === 0 ? (
@@ -230,14 +191,14 @@ export default function App() {
           ) : (
             <ul className="list">
               {tasks.map((t) => (
-                <li key={t.id} className={`item ${t.status === STATUS.DONE ? "itemDone" : ""}`}>
+                <li key={t.id} className={`item ${t.status === "TERMINADO" ? "itemDone" : ""}`}>
                   <div className="left">
                     <div className="topline">
                       <strong className="title">{t.title}</strong>
                       <span className={badgeClass(t.status)}>
-                        {t.status === STATUS.PENDING
+                        {t.status === "PENDIENTE"
                           ? "Pendiente"
-                          : t.status === STATUS.IN_PROGRESS
+                          : t.status === "EN_PROCESO"
                           ? "En proceso"
                           : "Terminado"}
                       </span>
@@ -255,20 +216,20 @@ export default function App() {
                     <label className="check">
                       <input
                         type="checkbox"
-                        checked={t.status === STATUS.DONE}
+                        checked={t.status === "TERMINADO"}
                         onChange={() => toggleDone(t.id)}
                       />
                       <span>✔</span>
                     </label>
 
                     <select
-                      value={t.status}
-                      onChange={(e) => updateStatus(t.id, e.target.value)}
                       className="miniSelect"
+                      value={t.status}
+                      onChange={(e) => setTaskStatus(t.id, e.target.value as Status)}
                     >
-                      <option value={STATUS.PENDING}>Pendiente</option>
-                      <option value={STATUS.IN_PROGRESS}>En proceso</option>
-                      <option value={STATUS.DONE}>Terminado</option>
+                      <option value="PENDIENTE">Pendiente</option>
+                      <option value="EN_PROCESO">En proceso</option>
+                      <option value="TERMINADO">Terminado</option>
                     </select>
 
                     <button className="ghost" onClick={() => removeOne(t.id)}>
@@ -281,16 +242,13 @@ export default function App() {
           )}
 
           <p className="hint2">
-            Si en algún celular no sale el botón, usa el menú del navegador:{" "}
-            <b>“Agregar a pantalla principal”</b>.
+            Si no aparece “Instalar”, usa el menú del navegador: <b>Agregar a pantalla principal</b>.
           </p>
         </section>
       </main>
 
       <footer className="foot">
-        <small>
-          React + Vite + Manifest. (Sin Service Worker para evitar problemas en deploy).
-        </small>
+        <small>React + Vite + TypeScript + Manifest + localStorage.</small>
       </footer>
     </div>
   );
